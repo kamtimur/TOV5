@@ -1,24 +1,99 @@
 /*++
-
+Copyright (c) 1999 - 2002  Microsoft Corporation
 Module Name:
-
-    TOV5.c
-
+passThrough.c
 Abstract:
-
-    This is the main module of the TOV5 miniFilter driver.
-
+This is the main module of the passThrough miniFilter driver.
+This filter hooks all IO operations for both pre and post operation
+callbacks.  The filter passes through the operations.
 Environment:
-
-    Kernel mode
-
+Kernel mode
 --*/
 
 #include <fltKernel.h>
 #include <dontuse.h>
+#include <suppress.h>
+#include <wdm.h>
+#include <ntdef.h>
+
+PDEVICE_OBJECT Global_DeviceObject = NULL;
+
+void * malloc(size_t size)
+{
+	//return ExAllocatePool(NonPagedPool, size);
+	return MmAllocateNonCachedMemory(size);
+}
+
+void free(void * p, size_t size)
+{
+	//ExFreePool(p);
+	MmFreeNonCachedMemory(p, size);
+}
+
+#define LOG_PRINT(a, ...)\
+    DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "%s:%d!    "a"\n", __FUNCTION__, __LINE__, ##__VA_ARGS__)
+
+
+VOID
+PrintIrpInfo(
+	PIRP Irp)
+{
+	PIO_STACK_LOCATION  irpSp;
+	irpSp = IoGetCurrentIrpStackLocation(Irp);
+
+	PAGED_CODE();
+
+	LOG_PRINT("\tIrp->AssociatedIrp.SystemBuffer = 0x%p\n",
+		Irp->AssociatedIrp.SystemBuffer);
+	LOG_PRINT("\tIrp->UserBuffer = 0x%p\n", Irp->UserBuffer);
+	LOG_PRINT("\tirpSp->Parameters.DeviceIoControl.Type3InputBuffer = 0x%p\n",
+		irpSp->Parameters.DeviceIoControl.Type3InputBuffer);
+	LOG_PRINT("\tirpSp->Parameters.DeviceIoControl.InputBufferLength = %d\n",
+		irpSp->Parameters.DeviceIoControl.InputBufferLength);
+	LOG_PRINT("\tirpSp->Parameters.DeviceIoControl.OutputBufferLength = %d\n",
+		irpSp->Parameters.DeviceIoControl.OutputBufferLength);
+	return;
+}
+
+VOID
+PrintChars(
+	_In_reads_(CountChars) PCHAR BufferAddress,
+	_In_ size_t CountChars
+)
+{
+	if (CountChars) {
+
+		while (CountChars--) {
+
+			if (*BufferAddress > 31
+				&& *BufferAddress != 127) {
+
+				LOG_PRINT("%02x:%c", *BufferAddress, *BufferAddress);
+
+			}
+			else {
+
+				LOG_PRINT("%02x:.", *BufferAddress);
+
+			}
+			BufferAddress++;
+		}
+	}
+	LOG_PRINT("\n");
+	return;
+}
+
 
 #pragma prefast(disable:__WARNING_ENCODE_MEMBER_FUNCTION_POINTER, "Not valid for kernel mode drivers")
 
+
+
+/// ....
+
+UNICODE_STRING g_ufullpaths;
+CHAR g_buffer[1024] = { 0 };
+
+/// ....
 
 PFLT_FILTER gFilterHandle;
 ULONG_PTR OperationStatusCtx = 1;
@@ -35,85 +110,48 @@ ULONG gTraceFlags = 0;
         ((int)0))
 
 /*************************************************************************
-    Prototypes
+Prototypes
 *************************************************************************/
-
-EXTERN_C_START
 
 DRIVER_INITIALIZE DriverEntry;
 NTSTATUS
-DriverEntry (
-    _In_ PDRIVER_OBJECT DriverObject,
-    _In_ PUNICODE_STRING RegistryPath
-    );
+DriverEntry(
+	_In_ PDRIVER_OBJECT DriverObject,
+	_In_ PUNICODE_STRING RegistryPath
+);
 
 NTSTATUS
-TOV5InstanceSetup (
-    _In_ PCFLT_RELATED_OBJECTS FltObjects,
-    _In_ FLT_INSTANCE_SETUP_FLAGS Flags,
-    _In_ DEVICE_TYPE VolumeDeviceType,
-    _In_ FLT_FILESYSTEM_TYPE VolumeFilesystemType
-    );
-
-VOID
-TOV5InstanceTeardownStart (
-    _In_ PCFLT_RELATED_OBJECTS FltObjects,
-    _In_ FLT_INSTANCE_TEARDOWN_FLAGS Flags
-    );
-
-VOID
-TOV5InstanceTeardownComplete (
-    _In_ PCFLT_RELATED_OBJECTS FltObjects,
-    _In_ FLT_INSTANCE_TEARDOWN_FLAGS Flags
-    );
+PtInstanceSetup(
+	_In_ PCFLT_RELATED_OBJECTS FltObjects,
+	_In_ FLT_INSTANCE_SETUP_FLAGS Flags,
+	_In_ DEVICE_TYPE VolumeDeviceType,
+	_In_ FLT_FILESYSTEM_TYPE VolumeFilesystemType
+);
 
 NTSTATUS
-TOV5Unload (
-    _In_ FLT_FILTER_UNLOAD_FLAGS Flags
-    );
+PtUnload(
+	_In_ FLT_FILTER_UNLOAD_FLAGS Flags
+);
 
-NTSTATUS
-TOV5InstanceQueryTeardown (
-    _In_ PCFLT_RELATED_OBJECTS FltObjects,
-    _In_ FLT_INSTANCE_QUERY_TEARDOWN_FLAGS Flags
-    );
-
-FLT_PREOP_CALLBACK_STATUS
-TOV5PreOperation (
-    _Inout_ PFLT_CALLBACK_DATA Data,
-    _In_ PCFLT_RELATED_OBJECTS FltObjects,
-    _Flt_CompletionContext_Outptr_ PVOID *CompletionContext
-    );
-
-VOID
-TOV5OperationStatusCallback (
-    _In_ PCFLT_RELATED_OBJECTS FltObjects,
-    _In_ PFLT_IO_PARAMETER_BLOCK ParameterSnapshot,
-    _In_ NTSTATUS OperationStatus,
-    _In_ PVOID RequesterContext
-    );
 
 FLT_POSTOP_CALLBACK_STATUS
-TOV5PostOperation (
-    _Inout_ PFLT_CALLBACK_DATA Data,
-    _In_ PCFLT_RELATED_OBJECTS FltObjects,
-    _In_opt_ PVOID CompletionContext,
-    _In_ FLT_POST_OPERATION_FLAGS Flags
-    );
+PtPostOperationPassThrough(
+	_Inout_ PFLT_CALLBACK_DATA Data,
+	_In_ PCFLT_RELATED_OBJECTS FltObjects,
+	_In_opt_ PVOID CompletionContext,
+	_In_ FLT_POST_OPERATION_FLAGS Flags
+);
 
-FLT_PREOP_CALLBACK_STATUS
-TOV5PreOperationNoPostOperation (
-    _Inout_ PFLT_CALLBACK_DATA Data,
-    _In_ PCFLT_RELATED_OBJECTS FltObjects,
-    _Flt_CompletionContext_Outptr_ PVOID *CompletionContext
-    );
 
-BOOLEAN
-TOV5DoRequestOperationStatus(
-    _In_ PFLT_CALLBACK_DATA Data
-    );
+FLT_POSTOP_CALLBACK_STATUS
+PtPostOperationPassThrough2(
+	_Inout_ PFLT_CALLBACK_DATA Data,
+	_In_ PCFLT_RELATED_OBJECTS FltObjects,
+	_In_opt_ PVOID CompletionContext,
+	_In_ FLT_POST_OPERATION_FLAGS Flags
+);
 
-EXTERN_C_END
+
 
 //
 //  Assign text sections for each routine.
@@ -121,11 +159,8 @@ EXTERN_C_END
 
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(INIT, DriverEntry)
-#pragma alloc_text(PAGE, TOV5Unload)
-#pragma alloc_text(PAGE, TOV5InstanceQueryTeardown)
-#pragma alloc_text(PAGE, TOV5InstanceSetup)
-#pragma alloc_text(PAGE, TOV5InstanceTeardownStart)
-#pragma alloc_text(PAGE, TOV5InstanceTeardownComplete)
+#pragma alloc_text(PAGE, PtUnload)
+#pragma alloc_text(PAGE, PtInstanceSetup)
 #endif
 
 //
@@ -133,206 +168,9 @@ EXTERN_C_END
 //
 
 CONST FLT_OPERATION_REGISTRATION Callbacks[] = {
-
-#if 0 // TODO - List all of the requests to filter.
-    { IRP_MJ_CREATE,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_CREATE_NAMED_PIPE,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_CLOSE,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_READ,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_WRITE,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_QUERY_INFORMATION,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_SET_INFORMATION,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_QUERY_EA,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_SET_EA,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_FLUSH_BUFFERS,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_QUERY_VOLUME_INFORMATION,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_SET_VOLUME_INFORMATION,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_DIRECTORY_CONTROL,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_FILE_SYSTEM_CONTROL,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_DEVICE_CONTROL,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_INTERNAL_DEVICE_CONTROL,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_SHUTDOWN,
-      0,
-      TOV5PreOperationNoPostOperation,
-      NULL },                               //post operations not supported
-
-    { IRP_MJ_LOCK_CONTROL,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_CLEANUP,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_CREATE_MAILSLOT,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_QUERY_SECURITY,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_SET_SECURITY,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_QUERY_QUOTA,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_SET_QUOTA,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_PNP,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_ACQUIRE_FOR_SECTION_SYNCHRONIZATION,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_RELEASE_FOR_SECTION_SYNCHRONIZATION,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_ACQUIRE_FOR_MOD_WRITE,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_RELEASE_FOR_MOD_WRITE,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_ACQUIRE_FOR_CC_FLUSH,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_RELEASE_FOR_CC_FLUSH,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_FAST_IO_CHECK_IF_POSSIBLE,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_NETWORK_QUERY_OPEN,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_MDL_READ,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_MDL_READ_COMPLETE,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_PREPARE_MDL_WRITE,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_MDL_WRITE_COMPLETE,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_VOLUME_MOUNT,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-    { IRP_MJ_VOLUME_DISMOUNT,
-      0,
-      TOV5PreOperation,
-      TOV5PostOperation },
-
-#endif // TODO
-
-    { IRP_MJ_OPERATION_END }
+	{ IRP_MJ_CREATE, 0, NULL, PtPostOperationPassThrough2},
+	{ IRP_MJ_DIRECTORY_CONTROL, 0, NULL,  PtPostOperationPassThrough },
+	{ IRP_MJ_OPERATION_END }
 };
 
 //
@@ -340,550 +178,474 @@ CONST FLT_OPERATION_REGISTRATION Callbacks[] = {
 //
 
 CONST FLT_REGISTRATION FilterRegistration = {
-
-    sizeof( FLT_REGISTRATION ),         //  Size
-    FLT_REGISTRATION_VERSION,           //  Version
-    0,                                  //  Flags
-
-    NULL,                               //  Context
-    Callbacks,                          //  Operation callbacks
-
-    TOV5Unload,                           //  MiniFilterUnload
-
-    TOV5InstanceSetup,                    //  InstanceSetup
-    TOV5InstanceQueryTeardown,            //  InstanceQueryTeardown
-    TOV5InstanceTeardownStart,            //  InstanceTeardownStart
-    TOV5InstanceTeardownComplete,         //  InstanceTeardownComplete
-
-    NULL,                               //  GenerateFileName
-    NULL,                               //  GenerateDestinationFileName
-    NULL                                //  NormalizeNameComponent
-
+	sizeof(FLT_REGISTRATION),	//  Size
+	FLT_REGISTRATION_VERSION,   //  Version // Minifilter drivers must set this member to FLT_REGISTRATION_VERSION
+	0,                          //  Flags
+	NULL,                       //  Context
+	Callbacks,                  //  Operation callbacks
+	PtUnload,                   //  MiniFilterUnload
+	PtInstanceSetup,            //  InstanceSetup
+	NULL,						//  InstanceQueryTeardown
+	NULL,						//  InstanceTeardownStart
+	NULL,						//  InstanceTeardownComplete
+	NULL,                       //  GenerateFileName
+	NULL,                       //  GenerateDestinationFileName
+	NULL                        //  NormalizeNameComponent
 };
 
 
 
 NTSTATUS
-TOV5InstanceSetup (
-    _In_ PCFLT_RELATED_OBJECTS FltObjects,
-    _In_ FLT_INSTANCE_SETUP_FLAGS Flags,
-    _In_ DEVICE_TYPE VolumeDeviceType,
-    _In_ FLT_FILESYSTEM_TYPE VolumeFilesystemType
-    )
-/*++
-
-Routine Description:
-
-    This routine is called whenever a new instance is created on a volume. This
-    gives us a chance to decide if we need to attach to this volume or not.
-
-    If this routine is not defined in the registration structure, automatic
-    instances are always created.
-
-Arguments:
-
-    FltObjects - Pointer to the FLT_RELATED_OBJECTS data structure containing
-        opaque handles to this filter, instance and its associated volume.
-
-    Flags - Flags describing the reason for this attach request.
-
-Return Value:
-
-    STATUS_SUCCESS - attach
-    STATUS_FLT_DO_NOT_ATTACH - do not attach
-
---*/
+PtInstanceSetup(
+	_In_ PCFLT_RELATED_OBJECTS FltObjects,
+	_In_ FLT_INSTANCE_SETUP_FLAGS Flags,
+	_In_ DEVICE_TYPE VolumeDeviceType,
+	_In_ FLT_FILESYSTEM_TYPE VolumeFilesystemType
+)
 {
-    UNREFERENCED_PARAMETER( FltObjects );
-    UNREFERENCED_PARAMETER( Flags );
-    UNREFERENCED_PARAMETER( VolumeDeviceType );
-    UNREFERENCED_PARAMETER( VolumeFilesystemType );
+	UNREFERENCED_PARAMETER(FltObjects);
+	UNREFERENCED_PARAMETER(Flags);
+	UNREFERENCED_PARAMETER(VolumeDeviceType);
+	UNREFERENCED_PARAMETER(VolumeFilesystemType);
 
-    PAGED_CODE();
+	PAGED_CODE();
 
-    PT_DBG_PRINT( PTDBG_TRACE_ROUTINES,
-                  ("TOV5!TOV5InstanceSetup: Entered\n") );
+	PT_DBG_PRINT(PTDBG_TRACE_ROUTINES,
+		("PassThrough!PtInstanceSetup: Entered\n"));
 
-    return STATUS_SUCCESS;
+	return STATUS_SUCCESS;
 }
+
+VOID Unload(PDRIVER_OBJECT DriverObject)
+{
+	UNREFERENCED_PARAMETER(DriverObject);
+
+	UNICODE_STRING deviceLink;
+	RtlInitUnicodeString(&deviceLink, L"\\??\\Filter");
+}
+
 
 
 NTSTATUS
-TOV5InstanceQueryTeardown (
-    _In_ PCFLT_RELATED_OBJECTS FltObjects,
-    _In_ FLT_INSTANCE_QUERY_TEARDOWN_FLAGS Flags
-    )
-/*++
-
-Routine Description:
-
-    This is called when an instance is being manually deleted by a
-    call to FltDetachVolume or FilterDetach thereby giving us a
-    chance to fail that detach request.
-
-    If this routine is not defined in the registration structure, explicit
-    detach requests via FltDetachVolume or FilterDetach will always be
-    failed.
-
-Arguments:
-
-    FltObjects - Pointer to the FLT_RELATED_OBJECTS data structure containing
-        opaque handles to this filter, instance and its associated volume.
-
-    Flags - Indicating where this detach request came from.
-
-Return Value:
-
-    Returns the status of this operation.
-
---*/
+DriverEntry(
+	_In_ PDRIVER_OBJECT DriverObject,
+	_In_ PUNICODE_STRING RegistryPath
+)
 {
-    UNREFERENCED_PARAMETER( FltObjects );
-    UNREFERENCED_PARAMETER( Flags );
+	NTSTATUS status;
 
-    PAGED_CODE();
-
-    PT_DBG_PRINT( PTDBG_TRACE_ROUTINES,
-                  ("TOV5!TOV5InstanceQueryTeardown: Entered\n") );
-
-    return STATUS_SUCCESS;
-}
+	// Handlers configuration for IOCTL and Unload
+	DriverObject->DriverUnload = Unload;
 
 
-VOID
-TOV5InstanceTeardownStart (
-    _In_ PCFLT_RELATED_OBJECTS FltObjects,
-    _In_ FLT_INSTANCE_TEARDOWN_FLAGS Flags
-    )
-/*++
+	UNREFERENCED_PARAMETER(RegistryPath);
 
-Routine Description:
+	LOG_PRINT("PassThrough: Entered");
+	status = FltRegisterFilter(DriverObject, &FilterRegistration, &gFilterHandle);
+	FLT_ASSERT(NT_SUCCESS(status));
+	if (NT_SUCCESS(status))
+	{
+		status = FltStartFiltering(gFilterHandle);
+		if (!NT_SUCCESS(status))
+		{
+			FltUnregisterFilter(gFilterHandle);
+		}
+	}
+	else
+	{
+		return status;
+	}
 
-    This routine is called at the start of instance teardown.
+	RtlCreateUnicodeString(&g_ufullpaths, L"\\Windows\\SysWOW64\\vaultcli.dll");
+	KdPrint(g_ufullpaths);
 
-Arguments:
-
-    FltObjects - Pointer to the FLT_RELATED_OBJECTS data structure containing
-        opaque handles to this filter, instance and its associated volume.
-
-    Flags - Reason why this instance is being deleted.
-
-Return Value:
-
-    None.
-
---*/
-{
-    UNREFERENCED_PARAMETER( FltObjects );
-    UNREFERENCED_PARAMETER( Flags );
-
-    PAGED_CODE();
-
-    PT_DBG_PRINT( PTDBG_TRACE_ROUTINES,
-                  ("TOV5!TOV5InstanceTeardownStart: Entered\n") );
-}
-
-
-VOID
-TOV5InstanceTeardownComplete (
-    _In_ PCFLT_RELATED_OBJECTS FltObjects,
-    _In_ FLT_INSTANCE_TEARDOWN_FLAGS Flags
-    )
-/*++
-
-Routine Description:
-
-    This routine is called at the end of instance teardown.
-
-Arguments:
-
-    FltObjects - Pointer to the FLT_RELATED_OBJECTS data structure containing
-        opaque handles to this filter, instance and its associated volume.
-
-    Flags - Reason why this instance is being deleted.
-
-Return Value:
-
-    None.
-
---*/
-{
-    UNREFERENCED_PARAMETER( FltObjects );
-    UNREFERENCED_PARAMETER( Flags );
-
-    PAGED_CODE();
-
-    PT_DBG_PRINT( PTDBG_TRACE_ROUTINES,
-                  ("TOV5!TOV5InstanceTeardownComplete: Entered\n") );
-}
-
-
-/*************************************************************************
-    MiniFilter initialization and unload routines.
-*************************************************************************/
-
-NTSTATUS
-DriverEntry (
-    _In_ PDRIVER_OBJECT DriverObject,
-    _In_ PUNICODE_STRING RegistryPath
-    )
-/*++
-
-Routine Description:
-
-    This is the initialization routine for this miniFilter driver.  This
-    registers with FltMgr and initializes all global data structures.
-
-Arguments:
-
-    DriverObject - Pointer to driver object created by the system to
-        represent this driver.
-
-    RegistryPath - Unicode string identifying where the parameters for this
-        driver are located in the registry.
-
-Return Value:
-
-    Routine can return non success error codes.
-
---*/
-{
-    NTSTATUS status;
-
-    UNREFERENCED_PARAMETER( RegistryPath );
-
-    PT_DBG_PRINT( PTDBG_TRACE_ROUTINES,
-                  ("TOV5!DriverEntry: Entered\n") );
-
-    //
-    //  Register with FltMgr to tell it our callback routines
-    //
-
-    status = FltRegisterFilter( DriverObject,
-                                &FilterRegistration,
-                                &gFilterHandle );
-
-    FLT_ASSERT( NT_SUCCESS( status ) );
-
-    if (NT_SUCCESS( status )) {
-
-        //
-        //  Start filtering i/o
-        //
-
-        status = FltStartFiltering( gFilterHandle );
-
-        if (!NT_SUCCESS( status )) {
-
-            FltUnregisterFilter( gFilterHandle );
-        }
-    }
-
-    return status;
+	return status;
 }
 
 NTSTATUS
-TOV5Unload (
-    _In_ FLT_FILTER_UNLOAD_FLAGS Flags
-    )
-/*++
-
-Routine Description:
-
-    This is the unload routine for this miniFilter driver. This is called
-    when the minifilter is about to be unloaded. We can fail this unload
-    request if this is not a mandatory unload indicated by the Flags
-    parameter.
-
-Arguments:
-
-    Flags - Indicating if this is a mandatory unload.
-
-Return Value:
-
-    Returns STATUS_SUCCESS.
-
---*/
+PtUnload(
+	_In_ FLT_FILTER_UNLOAD_FLAGS Flags
+)
 {
-    UNREFERENCED_PARAMETER( Flags );
+	UNREFERENCED_PARAMETER(Flags);
 
-    PAGED_CODE();
+	PAGED_CODE();
 
-    PT_DBG_PRINT( PTDBG_TRACE_ROUTINES,
-                  ("TOV5!TOV5Unload: Entered\n") );
+	PT_DBG_PRINT(PTDBG_TRACE_ROUTINES,
+		("PassThrough!PtUnload: Entered\n"));
 
-    FltUnregisterFilter( gFilterHandle );
+	FltUnregisterFilter(gFilterHandle);
 
-    return STATUS_SUCCESS;
-}
-
-
-/*************************************************************************
-    MiniFilter callback routines.
-*************************************************************************/
-FLT_PREOP_CALLBACK_STATUS
-TOV5PreOperation (
-    _Inout_ PFLT_CALLBACK_DATA Data,
-    _In_ PCFLT_RELATED_OBJECTS FltObjects,
-    _Flt_CompletionContext_Outptr_ PVOID *CompletionContext
-    )
-/*++
-
-Routine Description:
-
-    This routine is a pre-operation dispatch routine for this miniFilter.
-
-    This is non-pageable because it could be called on the paging path
-
-Arguments:
-
-    Data - Pointer to the filter callbackData that is passed to us.
-
-    FltObjects - Pointer to the FLT_RELATED_OBJECTS data structure containing
-        opaque handles to this filter, instance, its associated volume and
-        file object.
-
-    CompletionContext - The context for the completion routine for this
-        operation.
-
-Return Value:
-
-    The return value is the status of the operation.
-
---*/
-{
-    NTSTATUS status;
-
-    UNREFERENCED_PARAMETER( FltObjects );
-    UNREFERENCED_PARAMETER( CompletionContext );
-
-    PT_DBG_PRINT( PTDBG_TRACE_ROUTINES,
-                  ("TOV5!TOV5PreOperation: Entered\n") );
-
-    //
-    //  See if this is an operation we would like the operation status
-    //  for.  If so request it.
-    //
-    //  NOTE: most filters do NOT need to do this.  You only need to make
-    //        this call if, for example, you need to know if the oplock was
-    //        actually granted.
-    //
-
-    if (TOV5DoRequestOperationStatus( Data )) {
-
-        status = FltRequestOperationStatusCallback( Data,
-                                                    TOV5OperationStatusCallback,
-                                                    (PVOID)(++OperationStatusCtx) );
-        if (!NT_SUCCESS(status)) {
-
-            PT_DBG_PRINT( PTDBG_TRACE_OPERATION_STATUS,
-                          ("TOV5!TOV5PreOperation: FltRequestOperationStatusCallback Failed, status=%08x\n",
-                           status) );
-        }
-    }
-
-    // This template code does not do anything with the callbackData, but
-    // rather returns FLT_PREOP_SUCCESS_WITH_CALLBACK.
-    // This passes the request down to the next miniFilter in the chain.
-
-    return FLT_PREOP_SUCCESS_WITH_CALLBACK;
+	return STATUS_SUCCESS;
 }
 
 
 
-VOID
-TOV5OperationStatusCallback (
-    _In_ PCFLT_RELATED_OBJECTS FltObjects,
-    _In_ PFLT_IO_PARAMETER_BLOCK ParameterSnapshot,
-    _In_ NTSTATUS OperationStatus,
-    _In_ PVOID RequesterContext
-    )
-/*++
 
-Routine Description:
 
-    This routine is called when the given operation returns from the call
-    to IoCallDriver.  This is useful for operations where STATUS_PENDING
-    means the operation was successfully queued.  This is useful for OpLocks
-    and directory change notification operations.
 
-    This callback is called in the context of the originating thread and will
-    never be called at DPC level.  The file object has been correctly
-    referenced so that you can access it.  It will be automatically
-    dereferenced upon return.
 
-    This is non-pageable because it could be called on the paging path
+// ....................................................
 
-Arguments:
-
-    FltObjects - Pointer to the FLT_RELATED_OBJECTS data structure containing
-        opaque handles to this filter, instance, its associated volume and
-        file object.
-
-    RequesterContext - The context for the completion routine for this
-        operation.
-
-    OperationStatus -
-
-Return Value:
-
-    The return value is the status of the operation.
-
---*/
+ULONG get_next_entry_offset(IN PVOID p_data, IN FILE_INFORMATION_CLASS file_info)
 {
-    UNREFERENCED_PARAMETER( FltObjects );
-
-    PT_DBG_PRINT( PTDBG_TRACE_ROUTINES,
-                  ("TOV5!TOV5OperationStatusCallback: Entered\n") );
-
-    PT_DBG_PRINT( PTDBG_TRACE_OPERATION_STATUS,
-                  ("TOV5!TOV5OperationStatusCallback: Status=%08x ctx=%p IrpMj=%02x.%02x \"%s\"\n",
-                   OperationStatus,
-                   RequesterContext,
-                   ParameterSnapshot->MajorFunction,
-                   ParameterSnapshot->MinorFunction,
-                   FltGetIrpName(ParameterSnapshot->MajorFunction)) );
+	if (p_data == NULL)
+		return 0;
+	switch (file_info)
+	{
+	case FileDirectoryInformation:
+		return ((PFILE_DIRECTORY_INFORMATION)p_data)->NextEntryOffset;
+	case FileFullDirectoryInformation:
+		return ((PFILE_FULL_DIR_INFORMATION)p_data)->NextEntryOffset;
+	case FileIdFullDirectoryInformation:
+		return ((PFILE_ID_FULL_DIR_INFORMATION)p_data)->NextEntryOffset;
+	case FileBothDirectoryInformation:
+		return ((PFILE_BOTH_DIR_INFORMATION)p_data)->NextEntryOffset;
+	case FileIdBothDirectoryInformation:
+		return ((PFILE_ID_BOTH_DIR_INFORMATION)p_data)->NextEntryOffset;
+	case FileNamesInformation:
+		return ((PFILE_NAMES_INFORMATION)p_data)->NextEntryOffset;
+	default:
+		return 0;
+	}
 }
 
+VOID set_next_fbuffer_offset(IN PVOID p_data, IN FILE_INFORMATION_CLASS file_info, IN ULONG offset)
+{
+	if (p_data == NULL)
+		return;
+	switch (file_info)
+	{
+	case FileDirectoryInformation:
+		((PFILE_DIRECTORY_INFORMATION)p_data)->NextEntryOffset = offset;
+		break;
+	case FileFullDirectoryInformation:
+		((PFILE_FULL_DIR_INFORMATION)p_data)->NextEntryOffset = offset;
+		break;
+	case FileIdFullDirectoryInformation:
+		((PFILE_ID_FULL_DIR_INFORMATION)p_data)->NextEntryOffset = offset;
+		break;
+	case FileBothDirectoryInformation:
+		((PFILE_BOTH_DIR_INFORMATION)p_data)->NextEntryOffset = offset;
+		break;
+	case FileIdBothDirectoryInformation:
+		((PFILE_ID_BOTH_DIR_INFORMATION)p_data)->NextEntryOffset = offset;
+		break;
+	case FileNamesInformation:
+		((PFILE_NAMES_INFORMATION)p_data)->NextEntryOffset = offset;
+		break;
+	}
+}
+
+PWSTR  get_entry_file_name(IN PVOID p_data, IN FILE_INFORMATION_CLASS file_info)
+{
+	if (p_data == NULL)
+		return NULL;
+
+	switch (file_info)
+	{
+	case FileDirectoryInformation:
+		return ((PFILE_DIRECTORY_INFORMATION)p_data)->FileName;
+	case FileFullDirectoryInformation:
+		return ((PFILE_FULL_DIR_INFORMATION)p_data)->FileName;
+	case FileIdFullDirectoryInformation:
+		return ((PFILE_ID_FULL_DIR_INFORMATION)p_data)->FileName;
+	case FileBothDirectoryInformation:
+		return ((PFILE_BOTH_DIR_INFORMATION)p_data)->FileName;
+	case FileIdBothDirectoryInformation:
+		return ((PFILE_ID_BOTH_DIR_INFORMATION)p_data)->FileName;
+	case FileNamesInformation:
+		return ((PFILE_NAMES_INFORMATION)p_data)->FileName;
+	default:
+		return NULL;
+	}
+}
+
+ULONG get_fbuffer_filename_length(IN PVOID p_data, IN FILE_INFORMATION_CLASS file_info)
+{
+	if (p_data == NULL)
+		return 0;
+
+	switch (file_info)
+	{
+	case FileDirectoryInformation:
+		return ((PFILE_DIRECTORY_INFORMATION)p_data)->FileNameLength;
+	case FileFullDirectoryInformation:
+		return ((PFILE_FULL_DIR_INFORMATION)p_data)->FileNameLength;
+	case FileIdFullDirectoryInformation:
+		return ((PFILE_ID_FULL_DIR_INFORMATION)p_data)->FileNameLength;
+	case FileBothDirectoryInformation:
+		return ((PFILE_BOTH_DIR_INFORMATION)p_data)->FileNameLength;
+	case FileIdBothDirectoryInformation:
+		return ((PFILE_ID_BOTH_DIR_INFORMATION)p_data)->FileNameLength;
+	case FileNamesInformation:
+		return ((PFILE_NAMES_INFORMATION)p_data)->FileNameLength;
+	default:
+		return 0;
+	}
+}
+
+BOOLEAN is_observing_file(IN PUNICODE_STRING file_name, IN PUNICODE_STRING folder_name)//, IN PPRE_2_POST_CONTEXT p2pCtx)
+{
+	UNICODE_STRING test;
+	//RtlInitUnicodeString(&test, "r\x00""e\x00s\x00u\x00l\x00t\x00.\x00t\x00x\x00t\x00\x00\x00");
+	// RtlInitUnicodeString(&test, "C\x00o\x00o\x00k\x00i\x00e\x00s\x00\x00\x00");
+	RtlCreateUnicodeString(&test, L"Cookies");
+
+
+	PCHAR concatenated_buffer = malloc(folder_name->Length + file_name->Length + 2 + 2);
+	memcpy(concatenated_buffer, folder_name->Buffer, folder_name->Length);
+	concatenated_buffer[folder_name->Length] = '\\';
+	concatenated_buffer[folder_name->Length + 1] = 0;
+	memcpy(concatenated_buffer + folder_name->Length + 2, file_name->Buffer, file_name->Length);
+	//concatenated_buffer[folder_name->Length + file_name->Length + 2 - 8] = 0;
+	//concatenated_buffer[folder_name->Length + file_name->Length + 2 + 1 - 8] = 0;
+	UNICODE_STRING uString3;
+	RtlInitUnicodeString(&uString3, concatenated_buffer);
+
+	LOG_PRINT("[+] file_name: %wZ \\ %wZ \\ %d\n", folder_name, file_name, file_name->Length);
+	// LOG_PRINT("[+] file_name: %wZ \\ %wZ \\ %d\n", folder_name, test, file_name->Length);
+
+	if (RtlCompareUnicodeString(&test, file_name, FALSE) == RESULT_ZERO) {
+		LOG_PRINT("[+] MATCHED FILENAME");
+		LOG_PRINT("[+] detected needed file: %wZ\\%wZ", folder_name, file_name);
+		LOG_PRINT("[+] uString3: %wZ \\ %d", &uString3, uString3.Length);
+		LOG_PRINT("[+] g_ufullpaths: %wZ \\ %d\n", &g_ufullpaths, g_ufullpaths.Length);
+		// PrintChars(g_ufullpaths.Buffer, g_ufullpaths.Length);
+		// PrintChars(uString3.Buffer, uString3.Length);
+		// return TRUE;
+	}
+
+	if (RtlCompareUnicodeString(&uString3, &g_ufullpaths, FALSE) == RESULT_ZERO)
+	{
+		// PrintChars(file_name->Buffer, file_name->Length);
+		// PrintChars(test.Buffer, test.Length);
+		LOG_PRINT("[+] MATCHED FULL PATH");
+		LOG_PRINT("[+] detected needed file: %wZ\\%wZ", folder_name, file_name);
+		LOG_PRINT("[+] detected needed file: %wZ \\ %d\n", &uString3, uString3.Length);
+		return TRUE;
+	}
+
+
+	//for (int i = 0; i < G_UNAMES_SIZE; i++)
+	//{
+	//	if (file_name->Length == g_ufiles[i].Length &&
+	//		folder_name->Length == g_ufolders[i].Length &&
+	//		// p2pCtx->VolCtx->Name.Length == g_uvolume.Length &&
+	//		RtlCompareUnicodeStrings(file_name->Buffer, g_ufiles[i].Length / 2, g_ufiles[i].Buffer, g_ufiles[i].Length / 2, TRUE) == 0 &&
+	//		RtlCompareUnicodeStrings(folder_name->Buffer, g_ufolders[i].Length / 2, g_ufolders[i].Buffer, g_ufolders[i].Length / 2, TRUE) == 0)// &&
+	//																																		   //RtlCompareUnicodeStrings(p2pCtx->VolCtx->Name.Buffer, g_uvolume.Length / 2, g_uvolume.Buffer, g_uvolume.Length / 2, TRUE) == 0)
+	//	{
+	//		LOG_PRINT("detected needed file: %wZ\\%wZ\n", folder_name, file_name);
+	//		
+	//		LOG_PRINT("!!! detected needed file: %wZ\\%d\n", &uString3, uString3.Length);
+	//		LOG_PRINT("!!! detected needed file: %wZ\\%d\n", &(g_ufullpaths[0]), g_ufullpaths[0].Length);
+	//		PrintChars(uString3.Buffer, uString3.Length);
+	//		PrintChars(g_ufullpaths[0].Buffer, g_ufullpaths[0].Length);
+	//		
+
+	//		return TRUE;
+	//	}
+	//}
+	return FALSE;
+}
+
+
+typedef NTSTATUS(*MYPROC)(
+	_In_      HANDLE           ProcessHandle,
+	_In_      PROCESSINFOCLASS ProcessInformationClass,
+	_Out_     PVOID            ProcessInformation,
+	_In_      ULONG            ProcessInformationLength,
+	_Out_opt_ PULONG           ReturnLength
+	);
+
+extern UCHAR *PsGetProcessImageFileName(IN PEPROCESS Process);
+
+NTSTATUS
+GetProcessImageName(
+	PEPROCESS eProcess,
+	PUNICODE_STRING* ProcessImageName
+)
+{
+	NTSTATUS status = STATUS_UNSUCCESSFUL;
+	ULONG returnedLength;
+	HANDLE hProcess = NULL;
+
+	PAGED_CODE(); // this eliminates the possibility of the IDLE Thread/Process
+
+	if (eProcess == NULL)
+	{
+		return STATUS_INVALID_PARAMETER_1;
+	}
+
+	status = ObOpenObjectByPointer(eProcess, 0, NULL, 0, 0, KernelMode, &hProcess);
+	if (!NT_SUCCESS(status))
+	{
+		LOG_PRINT("ObOpenObjectByPointer Failed: %08x\n", status);
+		return status;
+	}
+
+	UNICODE_STRING routineName = RTL_CONSTANT_STRING(L"ZwQueryInformationProcess");
+	MYPROC ZwQueryInformationProcess = MmGetSystemRoutineAddress(&routineName);
+	//LOG_PRINT("[+] ZwQueryInformationProcess: %d", ZwQueryInformationProcess);
+
+	/* Query the actual size of the process path */
+	status = ZwQueryInformationProcess(hProcess,
+		ProcessImageFileName,
+		NULL, // buffer
+		0,    // buffer size
+		&returnedLength);
+
+	if (STATUS_INFO_LENGTH_MISMATCH != status) {
+		//LOG_PRINT("ZwQueryInformationProcess status = %x\n", status);
+		goto cleanUp;
+	}
+
+	//*ProcessImageName = malloc(returnedLength);
+
+	if (ProcessImageName == NULL)
+	{
+		status = STATUS_INSUFFICIENT_RESOURCES;
+		goto cleanUp;
+	}
+
+	/* Retrieve the process path from the handle to the process */
+	status = ZwQueryInformationProcess(hProcess,
+		ProcessImageFileName,
+		*ProcessImageName,
+		returnedLength,
+		&returnedLength);
+
+	// if (!NT_SUCCESS(status)) free(*ProcessImageName, returnedLength);
+
+cleanUp:
+
+	ZwClose(hProcess);
+
+	return status;
+}
+
+FLT_POSTOP_CALLBACK_STATUS PtPostOperationPassThrough2(
+	_Inout_ PFLT_CALLBACK_DATA Data,
+	_In_ PCFLT_RELATED_OBJECTS FltObjects,
+	_In_opt_ PVOID CompletionContext,
+	_In_ FLT_POST_OPERATION_FLAGS Flags)
+{
+	UNREFERENCED_PARAMETER(CompletionContext);
+	UNREFERENCED_PARAMETER(Flags);
+
+	if (!NT_SUCCESS(Data->IoStatus.Status) || FltObjects == 0 || FltObjects->FileObject == 0)
+	{
+		return FLT_POSTOP_FINISHED_PROCESSING;
+	}
+
+	if (RtlCompareUnicodeString(&g_ufullpaths, &FltObjects->FileObject->FileName, FALSE) == RESULT_ZERO) 
+	{
+		LOG_PRINT("[+] %wZ", &g_ufullpaths);
+
+		PEPROCESS proc = IoThreadToProcess(Data->Thread);
+		PUCHAR str;
+		UNICODE_STRING exeName;
+		LONG len;
+		int ulen;
+		str = PsGetProcessImageFileName(proc);
+		if ((RtlCompareMemory(str, "explorer.exe", 10) == 10) || (RtlCompareMemory(str, "MsMpEng.exe", 10) == 10)) {
+			LOG_PRINT("[+] allowed");
+		}
+		else {
+			LOG_PRINT("[!] not allowed !!!");
+		}
+
+		NTSTATUS status = STATUS_UNSUCCESSFUL;
+		char pni_[1024];
+		PUNICODE_STRING pni = pni_;
+
+		status = GetProcessImageName(IoThreadToProcess(Data->Thread), &pni);
+		if (NT_SUCCESS(status))
+		{
+			LOG_PRINT("ProcessName = %ws\n", pni->Buffer);
+		}
+		else
+		{
+			LOG_PRINT("GetProcessImageName status = %x\n", status);
+		}
+
+	}
+	return FLT_POSTOP_FINISHED_PROCESSING;
+}
 
 FLT_POSTOP_CALLBACK_STATUS
-TOV5PostOperation (
-    _Inout_ PFLT_CALLBACK_DATA Data,
-    _In_ PCFLT_RELATED_OBJECTS FltObjects,
-    _In_opt_ PVOID CompletionContext,
-    _In_ FLT_POST_OPERATION_FLAGS Flags
-    )
-/*++
-
-Routine Description:
-
-    This routine is the post-operation completion routine for this
-    miniFilter.
-
-    This is non-pageable because it may be called at DPC level.
-
-Arguments:
-
-    Data - Pointer to the filter callbackData that is passed to us.
-
-    FltObjects - Pointer to the FLT_RELATED_OBJECTS data structure containing
-        opaque handles to this filter, instance, its associated volume and
-        file object.
-
-    CompletionContext - The completion context set in the pre-operation routine.
-
-    Flags - Denotes whether the completion is successful or is being drained.
-
-Return Value:
-
-    The return value is the status of the operation.
-
---*/
+PtPostOperationPassThrough(
+	_Inout_ PFLT_CALLBACK_DATA Data,
+	_In_ PCFLT_RELATED_OBJECTS FltObjects,
+	_In_opt_ PVOID CompletionContext,
+	_In_ FLT_POST_OPERATION_FLAGS Flags
+)
 {
-    UNREFERENCED_PARAMETER( Data );
-    UNREFERENCED_PARAMETER( FltObjects );
-    UNREFERENCED_PARAMETER( CompletionContext );
-    UNREFERENCED_PARAMETER( Flags );
-
-    PT_DBG_PRINT( PTDBG_TRACE_ROUTINES,
-                  ("TOV5!TOV5PostOperation: Entered\n") );
-
-    return FLT_POSTOP_FINISHED_PROCESSING;
-}
+	UNREFERENCED_PARAMETER(CompletionContext);
+	//UNREFERENCED_PARAMETER(FltObjects);
+	UNREFERENCED_PARAMETER(Flags);
 
 
-FLT_PREOP_CALLBACK_STATUS
-TOV5PreOperationNoPostOperation (
-    _Inout_ PFLT_CALLBACK_DATA Data,
-    _In_ PCFLT_RELATED_OBJECTS FltObjects,
-    _Flt_CompletionContext_Outptr_ PVOID *CompletionContext
-    )
-/*++
-
-Routine Description:
-
-    This routine is a pre-operation dispatch routine for this miniFilter.
-
-    This is non-pageable because it could be called on the paging path
-
-Arguments:
-
-    Data - Pointer to the filter callbackData that is passed to us.
-
-    FltObjects - Pointer to the FLT_RELATED_OBJECTS data structure containing
-        opaque handles to this filter, instance, its associated volume and
-        file object.
-
-    CompletionContext - The context for the completion routine for this
-        operation.
-
-Return Value:
-
-    The return value is the status of the operation.
-
---*/
-{
-    UNREFERENCED_PARAMETER( Data );
-    UNREFERENCED_PARAMETER( FltObjects );
-    UNREFERENCED_PARAMETER( CompletionContext );
-
-    PT_DBG_PRINT( PTDBG_TRACE_ROUTINES,
-                  ("TOV5!TOV5PreOperationNoPostOperation: Entered\n") );
-
-    // This template code does not do anything with the callbackData, but
-    // rather returns FLT_PREOP_SUCCESS_NO_CALLBACK.
-    // This passes the request down to the next miniFilter in the chain.
-
-    return FLT_PREOP_SUCCESS_NO_CALLBACK;
-}
+	if (!NT_SUCCESS(Data->IoStatus.Status) ||
+		// Data->Iopb->MinorFunction != IRP_MN_QUERY_DIRECTORY ||
+		Data->Iopb->Parameters.DirectoryControl.QueryDirectory.DirectoryBuffer == NULL ||
+		//KeGetCurrentIrql() != PASSIVE_LEVEL ||
+		FltObjects == 0 ||
+		FltObjects->FileObject == 0)
+	{
+		return FLT_POSTOP_FINISHED_PROCESSING;
+	}
+	return FLT_POSTOP_FINISHED_PROCESSING;
 
 
-BOOLEAN
-TOV5DoRequestOperationStatus(
-    _In_ PFLT_CALLBACK_DATA Data
-    )
-/*++
+	//LOG_PRINT("KeGetCurrentIrql: %d\n", KeGetCurrentIrql());
 
-Routine Description:
+	// check parameters is correct
+	if (!NT_SUCCESS(Data->IoStatus.Status) ||
+		// Data->Iopb->MinorFunction != IRP_MN_QUERY_DIRECTORY ||
+		Data->Iopb->Parameters.DirectoryControl.QueryDirectory.DirectoryBuffer == NULL ||
+		KeGetCurrentIrql() != PASSIVE_LEVEL ||
+		FltObjects == 0 ||
+		FltObjects->FileObject == 0)
+	{
+		return FLT_POSTOP_FINISHED_PROCESSING;
+	}
 
-    This identifies those operations we want the operation status for.  These
-    are typically operations that return STATUS_PENDING as a normal completion
-    status.
+	// check file info
+	FILE_INFORMATION_CLASS fileInfo;
+	fileInfo = Data->Iopb->Parameters.DirectoryControl.QueryDirectory.FileInformationClass;
 
-Arguments:
+	PVOID cur_fbuffer = NULL;
+	PVOID prev_fbuffer = NULL;
+	ULONG next_offset = 0;
+	UNICODE_STRING cur_filename;
 
-Return Value:
+	//get current directory buffer
+	cur_fbuffer = Data->Iopb->Parameters.DirectoryControl.QueryDirectory.DirectoryBuffer;
+	prev_fbuffer = 0;
+	int f_id = 0;
+	while (1)
+	{
+		// ...
+		next_offset = get_next_entry_offset(cur_fbuffer, fileInfo);
 
-    TRUE - If we want the operation status
-    FALSE - If we don't
+		// filename
+		cur_filename.Buffer = get_entry_file_name(cur_fbuffer, fileInfo);
+		if (cur_filename.Buffer == NULL)
+			break;
+		cur_filename.Length = (cur_filename.MaximumLength = (USHORT)get_fbuffer_filename_length(cur_fbuffer, fileInfo));
 
---*/
-{
-    PFLT_IO_PARAMETER_BLOCK iopb = Data->Iopb;
-
-    //
-    //  return boolean state based on which operations we are interested in
-    //
-
-    return (BOOLEAN)
-
-            //
-            //  Check for oplock operations
-            //
-
-             (((iopb->MajorFunction == IRP_MJ_FILE_SYSTEM_CONTROL) &&
-               ((iopb->Parameters.FileSystemControl.Common.FsControlCode == FSCTL_REQUEST_FILTER_OPLOCK)  ||
-                (iopb->Parameters.FileSystemControl.Common.FsControlCode == FSCTL_REQUEST_BATCH_OPLOCK)   ||
-                (iopb->Parameters.FileSystemControl.Common.FsControlCode == FSCTL_REQUEST_OPLOCK_LEVEL_1) ||
-                (iopb->Parameters.FileSystemControl.Common.FsControlCode == FSCTL_REQUEST_OPLOCK_LEVEL_2)))
-
-              ||
-
-              //
-              //    Check for directy change notification
-              //
-
-              ((iopb->MajorFunction == IRP_MJ_DIRECTORY_CONTROL) &&
-               (iopb->MinorFunction == IRP_MN_NOTIFY_CHANGE_DIRECTORY))
-             );
+		// ...
+		if (is_observing_file(&cur_filename, &FltObjects->FileObject->FileName))
+		{
+			LOG_PRINT("[+] fileInfo: %d", fileInfo);
+		}
+		// check for end
+		if (next_offset == 0)
+			break;
+		prev_fbuffer = cur_fbuffer;
+		cur_fbuffer = (PVOID)((PCHAR)cur_fbuffer + next_offset);
+	}
+	return FLT_POSTOP_FINISHED_PROCESSING;
 }
